@@ -50,6 +50,10 @@ Three roles in `profiles.role`: `staff`, `manager`, `admin` (a 3-tier system tha
 - Schema is managed by hand-run SQL, not migrations. `supabase-setup.sql` is the **idempotent** full setup (run it in the Supabase SQL Editor; safe to re-run). Tables: `profiles`, `participants`, `programs`, `program_enrollments`, `attendance_records`, `program_staff`. Setup details and gotchas (email-confirmation must be disabled, first admin must be approved manually) are in `SUPABASE_SETUP.md` and `ROLE-SYSTEM-UPDATE.md`. Other root `.sql` files (`update-programs-schema.sql`, `clear-participants.sql`) are one-off helper scripts.
 - `historical-participation-tracking.sql` is a **required** idempotent migration for the participation-lifecycle layer (run it after `supabase-setup.sql`). It adds `participants.{is_active, deactivated_at, reactivated_at}`, `program_enrollments.{start_date, end_date, is_active, withdrawal_reason, enrollment_data}`, the `participation_history` table, and triggers that auto-log enrollment/withdrawal/profile status changes. `ParticipantProfile` (withdraw/deactivate/reactivate/re-enroll — all **soft**, never hard-delete enrollments), `AddToProgram`, `Attendance`, and `SearchParticipant` depend on these columns; queries will error until the migration is run.
 
+## Documentation
+
+Project documentation lives in `docs/`: `DESIGN.md` (architecture, data model, role matrix, workflows, decisions — with Mermaid diagrams), `TESTING.md` (manual test plan + debugging notes), `REFERENCES.md` (libraries/licences + sources), and `REPORT.md` (consolidated report with methodology). `CHANGELOG.md` (root) summarises tracked changes.
+
 ## Domain notes
 
 `src/app/utils/constants.ts` holds South Australia–specific reference data (council regions, Adelaide Hills townships) and date/country option lists used by the participant registration forms. The app is tailored to a South Australian community organisation.

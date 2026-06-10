@@ -102,6 +102,9 @@ export function Layout({ children, title, subtitle }: LayoutProps) {
     return location.pathname === path || location.pathname.startsWith(path + '/');
   };
 
+  // Returns the sidebar items visible to the current user's role. Items flagged
+  // managerOnly/adminOnly are filtered out for lower roles. This is a usability
+  // layer only — actual authorisation is enforced by the database RLS policies.
   const getMenuItems = (): MenuItem[] => {
     if ((user?.role as unknown as string) === 'Participant') return participantMenuItems;
     if (user?.role === 'staff') return staffMenuItems.filter((i) => !i.managerOnly && !i.adminOnly);

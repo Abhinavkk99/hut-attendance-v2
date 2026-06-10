@@ -1,3 +1,9 @@
+// Authentication context. Provides the current user's login state, profile
+// (including role), and login/logout actions to the whole component tree via the
+// useAuth() hook. Roles drive feature access across the app:
+//   staff   — mark attendance and view training only
+//   manager — staff permissions + register/enrol participants
+//   admin   — full access including search, reports, programs, and approvals
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { supabase, isSupabaseConfigured, Profile } from '../../lib/supabase';
 
@@ -16,11 +22,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<{ name: string; role: 'staff' | 'manager' | 'admin'; id: string; email: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Check if user is already logged in on mount
+  // On mount, restore any existing Supabase session (persisted in the browser) so
+  // a logged-in user stays logged in across page refreshes.
   useEffect(() => {
     checkUser();
   }, []);
 
+  // Restores the session, loads the matching profile row, and enforces the
+  // admin-approval gate: unapproved accounts are signed out immediately.
   const checkUser = async () => {
     if (!isSupabaseConfigured) {
       setLoading(false);
@@ -68,6 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Authenticates against Supabase Auth, loads the profile, and blocks unapproved
+  // accounts. Returns a typed result so the Login screen can show a clear message.
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
     if (!isSupabaseConfigured) {
       return { success: false, error: 'Supabase is not configured' };
@@ -121,6 +132,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Ends the Supabase session and clears local auth state, which causes the route
+  // guards to redirect back to /login on the next render.
   const logout = async () => {
     if (isSupabaseConfigured) {
       await supabase.auth.signOut();

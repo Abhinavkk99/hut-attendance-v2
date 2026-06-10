@@ -62,6 +62,10 @@ export default function Approvals() {
     }
   };
 
+  // Approve a pending user by setting approved=true.
+  // The .select() after the update is a safeguard: under row-level security a
+  // blocked update succeeds silently and returns zero rows, so an empty result
+  // means the caller lacked permission rather than the update truly applying.
   const approve = async (id: string) => {
     setProcessingId(id);
     setError('');
@@ -83,6 +87,9 @@ export default function Approvals() {
     }
   };
 
+  // Deny a pending user by deleting their profile row. A database trigger
+  // (see security-fixes.sql) also removes the linked auth.users record so no
+  // orphaned login account is left behind.
   const deny = async (id: string) => {
     if (!confirm('Deny this user? Their account will be deleted.')) return;
     setProcessingId(id);
