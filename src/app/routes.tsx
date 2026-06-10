@@ -26,10 +26,18 @@ function RootLayout() {
   );
 }
 
-// Protected Route wrapper
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, loading } = useAuth();
-  
+// Protected Route wrapper. Pass `roles` to restrict a route to specific roles —
+// this is defense-in-depth on top of the database RLS policies, which are the
+// real authorization boundary (see security-fixes.sql).
+function ProtectedRoute({
+  children,
+  roles,
+}: {
+  children: React.ReactNode;
+  roles?: Array<'staff' | 'manager' | 'admin'>;
+}) {
+  const { isAuthenticated, user, loading } = useAuth();
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -40,11 +48,16 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  
+
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
-  
+
+  // Authenticated but not permitted for this route — send to their home.
+  if (roles && (!user || !roles.includes(user.role))) {
+    return <Navigate to="/" replace />;
+  }
+
   return <>{children}</>;
 }
 
@@ -130,7 +143,7 @@ export const router = createBrowserRouter([
       {
         path: '/add-participant',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['manager', 'admin']}>
             <AddParticipant />
           </ProtectedRoute>
         ),
@@ -138,7 +151,7 @@ export const router = createBrowserRouter([
       {
         path: '/add-participant-multistep',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['manager', 'admin']}>
             <AddParticipantMultiStep />
           </ProtectedRoute>
         ),
@@ -146,7 +159,7 @@ export const router = createBrowserRouter([
       {
         path: '/search',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['admin']}>
             <SearchParticipant />
           </ProtectedRoute>
         ),
@@ -154,7 +167,7 @@ export const router = createBrowserRouter([
       {
         path: '/add-to-program',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['manager', 'admin']}>
             <AddToProgram />
           </ProtectedRoute>
         ),
@@ -162,7 +175,7 @@ export const router = createBrowserRouter([
       {
         path: '/participant/:id',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['manager', 'admin']}>
             <ParticipantProfile />
           </ProtectedRoute>
         ),
@@ -170,7 +183,7 @@ export const router = createBrowserRouter([
       {
         path: '/participant/:id/edit',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['admin']}>
             <EditParticipant />
           </ProtectedRoute>
         ),
@@ -186,7 +199,7 @@ export const router = createBrowserRouter([
       {
         path: '/reports',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['admin']}>
             <Reports />
           </ProtectedRoute>
         ),
@@ -202,7 +215,7 @@ export const router = createBrowserRouter([
       {
         path: '/approvals',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['admin']}>
             <Approvals />
           </ProtectedRoute>
         ),
@@ -210,7 +223,7 @@ export const router = createBrowserRouter([
       {
         path: '/programs',
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute roles={['admin']}>
             <Programs />
           </ProtectedRoute>
         ),
