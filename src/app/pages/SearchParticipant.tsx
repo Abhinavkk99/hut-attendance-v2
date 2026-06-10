@@ -40,9 +40,12 @@ export default function SearchParticipant() {
       }
 
       const ids = list.map((p) => p.id).filter(Boolean) as string[];
+      // Only active enrollments count toward the Active/Inactive classification —
+      // a participant whose enrollments have all been withdrawn/deactivated is Inactive.
       const { data: enrollmentRows, error: enrollmentError } = await supabase
         .from('program_enrollments')
         .select('participant_id')
+        .eq('is_active', true)
         .in('participant_id', ids);
       if (enrollmentError) throw enrollmentError;
 

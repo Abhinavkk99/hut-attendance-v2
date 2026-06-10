@@ -10,6 +10,7 @@ export default function AddToProgram() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedParticipant, setSelectedParticipant] = useState<string | null>(null);
   const [selectedProgram, setSelectedProgram] = useState('');
+  const [enrollmentDate, setEnrollmentDate] = useState(new Date().toISOString().split('T')[0]);
   const [showSuccess, setShowSuccess] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -93,10 +94,23 @@ export default function AddToProgram() {
   }, [searchTerm, participants]);
 
   const handleAdd = async () => {
-    if (!selectedParticipant || !selectedProgram) return;
-    const { error } = await supabase
-      .from('program_enrollments')
-      .insert([{ participant_id: selectedParticipant, program_id: selectedProgram }]);
+    if (!selectedParticipant || !selectedProgram || !enrollmentDate) return;
+    // Convert the date to an ISO string at noon UTC so the stored start date never
+    // shifts a day due to timezone parsing.
+    const [year, month, day] = enrollmentDate.split('-');
+    const enrollmentDateTime = new Date(
+      Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), 12, 0, 0),
+    ).toISOString();
+
+    const { error } = await supabase.from('program_enrollments').insert([
+      {
+        participant_id: selectedParticipant,
+        program_id: selectedProgram,
+        start_date: enrollmentDateTime,
+        enrolled_at: enrollmentDateTime,
+        is_active: true,
+      },
+    ]);
     if (error) {
       if (error.code === '23505') {
         alert('This participant is already enrolled in this program');
@@ -111,6 +125,7 @@ export default function AddToProgram() {
       setShowSuccess(false);
       setSelectedParticipant(null);
       setSelectedProgram('');
+      setEnrollmentDate(new Date().toISOString().split('T')[0]);
     }, 1500);
   };
 
@@ -185,6 +200,16 @@ export default function AddToProgram() {
                 </p>
               )}
             </div>
+            <div className="sm:max-w-[12rem]">
+              <label className="mb-1.5 block text-xs text-zinc-400">Enrollment date</label>
+              <input
+                type="date"
+                value={enrollmentDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={(e) => setEnrollmentDate(e.target.value)}
+                className="w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={() => {
@@ -197,7 +222,7 @@ export default function AddToProgram() {
               </button>
               <button
                 onClick={handleAdd}
-                disabled={!selectedProgram}
+                disabled={!selectedProgram || !enrollmentDate}
                 className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-blue-500/20 hover:from-blue-400 hover:to-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={15} /> Add

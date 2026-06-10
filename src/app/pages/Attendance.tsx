@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import { Layout } from '../components/Layout';
 import { ClipboardCheck, Check, Calendar, AlertCircle, Info } from 'lucide-react';
@@ -23,21 +23,38 @@ export default function Attendance() {
   const [attendance, setAttendance] = useState<Record<string, boolean>>({});
   const [showSuccess, setShowSuccess] = useState(false);
   const [programs, setPrograms] = useState<Program[]>([]);
-  const [todaysPrograms, setTodaysPrograms] = useState<Program[]>([]);
   const [programParticipants, setProgramParticipants] = useState<EnrolledParticipant[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const todayDay = days[new Date().getDay()];
-  const todayLong = new Date().toLocaleDateString('en-AU', {
+  // Parse the date input as local midnight so the day-of-week never shifts due to
+  // UTC parsing of a bare "YYYY-MM-DD" string.
+  const selectedDate = useMemo(() => new Date(date + 'T00:00:00'), [date]);
+  const selectedDay = days[selectedDate.getDay()];
+  const selectedLong = selectedDate.toLocaleDateString('en-AU', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
   });
 
+  // Programs that run on the selected date's day-of-week. Re-derived whenever the
+  // date changes so picking a past/future date shows that day's programs.
+  const programsForSelectedDate = useMemo(
+    () => programs.filter((p: any) => p.days?.includes(selectedDay)),
+    [programs, selectedDay],
+  );
+
   useEffect(() => {
     fetchPrograms();
   }, []);
+
+  // If the chosen program isn't scheduled on the newly selected date, clear it.
+  useEffect(() => {
+    if (selectedProgram && !programsForSelectedDate.some((p) => p.id === selectedProgram)) {
+      setSelectedProgram('');
+      setAttendance({});
+    }
+  }, [programsForSelectedDate, selectedProgram]);
 
   useEffect(() => {
     if (selectedProgram) fetchProgramParticipants(selectedProgram);
@@ -69,7 +86,6 @@ export default function Attendance() {
         programsData = data || [];
       }
       setPrograms(programsData);
-      setTodaysPrograms(programsData.filter((p: any) => p.days?.includes(todayDay)));
     } catch (err) {
       console.error('Error fetching programs:', err);
     }
@@ -81,7 +97,8 @@ export default function Attendance() {
       const { data } = await supabase
         .from('program_enrollments')
         .select(`participant_id, participants ( id, first_name, last_name, email, phone )`)
-        .eq('program_id', programId);
+        .eq('program_id', programId)
+        .eq('is_active', true);
       const participants = data?.map((e: any) => e.participants).filter(Boolean) || [];
       setProgramParticipants(participants);
     } catch (err) {
@@ -134,9 +151,9 @@ export default function Attendance() {
         {/* Date card */}
         <div className="rounded-xl border border-zinc-800/80 bg-[#111113] p-4">
           <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-zinc-500">
-            <Calendar size={14} /> Today
+            <Calendar size={14} /> Session
           </div>
-          <div className="mt-2 text-lg font-semibold text-zinc-100">{todayLong}</div>
+          <div className="mt-2 text-lg font-semibold text-zinc-100">{selectedLong}</div>
           <label className="mt-4 block text-xs text-zinc-400">Session date</label>
           <input
             type="date"
@@ -151,10 +168,10 @@ export default function Attendance() {
           <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-zinc-500">
             <ClipboardCheck size={14} /> Program
           </div>
-          {todaysPrograms.length === 0 ? (
+          {programsForSelectedDate.length === 0 ? (
             <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-sm text-amber-300">
               <AlertCircle size={15} className="mt-0.5 flex-shrink-0" />
-              No programs scheduled for {todayDay}.
+              No programs scheduled for {selectedDay}.
             </div>
           ) : (
             <select
@@ -166,7 +183,7 @@ export default function Attendance() {
               className="mt-3 w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2.5 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             >
               <option value="">Choose a program…</option>
-              {todaysPrograms.map((p) => (
+              {programsForSelectedDate.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} · {p.start_time}–{p.end_time}
                 </option>

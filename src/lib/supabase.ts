@@ -44,6 +44,10 @@ export interface Participant {
   emergency_contact_phone: string;
   additional_requirements?: string;
   created_at?: string;
+  // Activation lifecycle (optional — added by historical-participation-tracking.sql)
+  is_active?: boolean;
+  deactivated_at?: string | null;
+  reactivated_at?: string | null;
   // Cultural background (optional — added in later migrations)
   identify_aboriginal_tsi?: string;
   speak_other_language?: string;
@@ -77,6 +81,26 @@ export interface ProgramEnrollment {
   participant_id: string;
   program_id: string;
   enrolled_at?: string;
+  // Enrollment period / lifecycle (optional — added by historical-participation-tracking.sql)
+  start_date?: string | null;
+  end_date?: string | null;
+  is_active?: boolean;
+  withdrawal_reason?: string | null;
+  enrollment_data?: Record<string, unknown> | null;
+}
+
+export interface ParticipationHistory {
+  id?: string;
+  participant_id: string;
+  program_id?: string | null;
+  change_type:
+    | 'program_enrollment'
+    | 'program_withdrawal'
+    | 'profile_deactivation'
+    | 'profile_reactivation';
+  change_date: string;
+  notes?: string | null;
+  created_at?: string;
 }
 
 export interface AttendanceRecord {

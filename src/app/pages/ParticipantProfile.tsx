@@ -11,7 +11,21 @@ interface EnrolledProgram extends Program {
   total_sessions?: number;
   enrollment_notes?: string;
   enrollment_data?: any; // Program-specific enrollment data
+  // Enrollment lifecycle (from program_enrollments)
+  start_date?: string | null;
+  end_date?: string | null;
+  is_active?: boolean;
+  withdrawal_reason?: string | null;
 }
+
+// Convert a YYYY-MM-DD date input into an ISO string at noon UTC so the stored
+// date never shifts a day due to timezone parsing.
+const toNoonUTC = (dateStr: string) => {
+  const [year, month, day] = dateStr.split('-');
+  return new Date(Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), 12, 0, 0)).toISOString();
+};
+
+const today = () => new Date().toISOString().split('T')[0];
 
 export default function ParticipantProfile() {
   const { id } = useParams<{ id: string }>();
@@ -27,8 +41,18 @@ export default function ParticipantProfile() {
   const [deleting, setDeleting] = useState(false);
   const [showUnenrollConfirm, setShowUnenrollConfirm] = useState(false);
   const [showUnenrollAllConfirm, setShowUnenrollAllConfirm] = useState(false);
+  const [showReactivateConfirm, setShowReactivateConfirm] = useState(false);
+  const [showReenrollConfirm, setShowReenrollConfirm] = useState(false);
   const [programToUnenroll, setProgramToUnenroll] = useState<EnrolledProgram | null>(null);
+  const [programToReenroll, setProgramToReenroll] = useState<EnrolledProgram | null>(null);
   const [unenrolling, setUnenrolling] = useState(false);
+  // Effective dates for each lifecycle action
+  const [withdrawalDate, setWithdrawalDate] = useState(today());
+  const [deactivationDate, setDeactivationDate] = useState(today());
+  const [reactivationDate, setReactivationDate] = useState(today());
+  const [reenrollmentDate, setReenrollmentDate] = useState(today());
+
+  const profileActive = participant?.is_active !== false;
 
   useEffect(() => {
     if (id) {
@@ -59,6 +83,10 @@ export default function ParticipantProfile() {
         .from('program_enrollments')
         .select(`
           enrolled_at,
+          start_date,
+          end_date,
+          is_active,
+          withdrawal_reason,
           programs (
             id,
             name,
@@ -69,7 +97,8 @@ export default function ParticipantProfile() {
             capacity
           )
         `)
-        .eq('participant_id', id);
+        .eq('participant_id', id)
+        .order('start_date', { ascending: false });
 
       if (enrollmentsError) throw enrollmentsError;
 
@@ -129,6 +158,10 @@ export default function ParticipantProfile() {
           return {
             ...enrollment.programs,
             enrolled_at: enrollment.enrolled_at,
+            start_date: enrollment.start_date,
+            end_date: enrollment.end_date,
+            is_active: enrollment.is_active,
+            withdrawal_reason: enrollment.withdrawal_reason,
             attendance_count,
             enrollment_data: enrollmentData
           };
@@ -202,50 +235,145 @@ export default function ParticipantProfile() {
     navigate(`/participant/${id}/edit`);
   };
 
+  // Withdraw from a single program (soft) — keeps the enrollment row and its
+  // attendance history; the DB trigger logs a 'program_withdrawal' entry.
   const handleUnenrollFromProgram = async () => {
     if (!id || !programToUnenroll?.id || !isSupabaseConfigured) return;
     setUnenrolling(true);
     try {
       const { error: enrollmentError } = await supabase
         .from('program_enrollments')
-        .delete()
+        .update({
+          is_active: false,
+          end_date: toNoonUTC(withdrawalDate),
+          withdrawal_reason: 'Withdrawn by staff',
+        })
         .eq('participant_id', id)
         .eq('program_id', programToUnenroll.id);
       if (enrollmentError) throw enrollmentError;
       await fetchParticipant();
       setShowUnenrollConfirm(false);
       setProgramToUnenroll(null);
+      setWithdrawalDate(today());
     } catch (err) {
-      console.error('Error unenrolling from program:', err);
-      setError('Failed to unenroll from program. Please try again.');
+      console.error('Error withdrawing from program:', err);
+      setError('Failed to withdraw from program. Please try again.');
       setShowUnenrollConfirm(false);
     } finally {
       setUnenrolling(false);
     }
   };
 
+  // Deactivate the whole profile (soft). Active enrollments are ended first, then
+  // the participant is flagged inactive; the DB trigger logs a 'profile_deactivation'.
   const handleUnenrollFromAllPrograms = async () => {
     if (!id || !isSupabaseConfigured) return;
     setUnenrolling(true);
     try {
+      const deactivationDateTime = toNoonUTC(deactivationDate);
+
       const { error: enrollmentError } = await supabase
         .from('program_enrollments')
-        .delete()
-        .eq('participant_id', id);
+        .update({
+          is_active: false,
+          end_date: deactivationDateTime,
+          withdrawal_reason: 'Profile deactivated',
+        })
+        .eq('participant_id', id)
+        .eq('is_active', true);
       if (enrollmentError) throw enrollmentError;
+
+      const { error: participantError } = await supabase
+        .from('participants')
+        .update({
+          is_active: false,
+          deactivated_at: deactivationDateTime,
+        })
+        .eq('id', id);
+      if (participantError) throw participantError;
+
       await fetchParticipant();
       setShowUnenrollAllConfirm(false);
+      setDeactivationDate(today());
     } catch (err) {
-      console.error('Error making profile inactive:', err);
-      setError('Failed to make profile inactive. Please try again.');
+      console.error('Error deactivating profile:', err);
+      setError('Failed to deactivate profile. Please try again.');
       setShowUnenrollAllConfirm(false);
     } finally {
       setUnenrolling(false);
     }
   };
 
-  const handleReactivateProfile = () => {
-    navigate('/add-to-program');
+  // Reactivate the profile (soft) and re-enroll the programs that were ended by
+  // the deactivation (not ones manually withdrawn).
+  const handleReactivateProfile = async () => {
+    if (!id || !isSupabaseConfigured) return;
+    setUnenrolling(true);
+    try {
+      const reactivationDateTime = toNoonUTC(reactivationDate);
+
+      const { error: participantError } = await supabase
+        .from('participants')
+        .update({
+          is_active: true,
+          reactivated_at: reactivationDateTime,
+          deactivated_at: null,
+        })
+        .eq('id', id);
+      if (participantError) throw participantError;
+
+      const { error: enrollmentError } = await supabase
+        .from('program_enrollments')
+        .update({
+          is_active: true,
+          start_date: reactivationDateTime,
+          end_date: null,
+          withdrawal_reason: null,
+        })
+        .eq('participant_id', id)
+        .eq('is_active', false)
+        .eq('withdrawal_reason', 'Profile deactivated');
+      if (enrollmentError) throw enrollmentError;
+
+      await fetchParticipant();
+      setShowReactivateConfirm(false);
+      setReactivationDate(today());
+    } catch (err) {
+      console.error('Error reactivating profile:', err);
+      setError('Failed to reactivate profile. Please try again.');
+      setShowReactivateConfirm(false);
+    } finally {
+      setUnenrolling(false);
+    }
+  };
+
+  // Re-enroll into a single previously-ended program.
+  const handleReenroll = async () => {
+    if (!id || !programToReenroll?.id || !isSupabaseConfigured) return;
+    setUnenrolling(true);
+    try {
+      const { error: enrollmentError } = await supabase
+        .from('program_enrollments')
+        .update({
+          is_active: true,
+          start_date: toNoonUTC(reenrollmentDate),
+          end_date: null,
+          withdrawal_reason: null,
+        })
+        .eq('participant_id', id)
+        .eq('program_id', programToReenroll.id);
+      if (enrollmentError) throw enrollmentError;
+      await fetchParticipant();
+      setShowReenrollConfirm(false);
+      setProgramToReenroll(null);
+      setReenrollmentDate(today());
+    } catch (err) {
+      console.error('Error re-enrolling in program:', err);
+      setError('Failed to re-enroll in program. Please try again.');
+      setShowReenrollConfirm(false);
+    } finally {
+      setUnenrolling(false);
+    }
   };
 
   if (loading) {
@@ -280,9 +408,20 @@ export default function ParticipantProfile() {
     );
   }
 
+  const activePrograms = enrolledPrograms.filter((p) => p.is_active !== false);
+  const pastPrograms = enrolledPrograms.filter((p) => p.is_active === false);
+
   return (
     <Layout title="Participant Profile">
       <div className="max-w-5xl mx-auto">
+        {!profileActive && (
+          <div className="mb-6 flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            <UserX size={18} className="flex-shrink-0" />
+            <span>
+              This profile is <span className="font-semibold">inactive</span>. Reactivate it to re-enable enrollments.
+            </span>
+          </div>
+        )}
         {/* Header Card */}
         <div className="mb-6 rounded-xl border border-zinc-800/80 bg-[#111113] p-5">
           <div className="flex items-center gap-4">
@@ -830,15 +969,15 @@ export default function ParticipantProfile() {
             Enrolled Programs
           </h3>
 
-          {enrolledPrograms.length === 0 ? (
+          {activePrograms.length === 0 ? (
             <div className="bg-zinc-900/40 p-8 rounded-xl text-center">
               <BookOpen className="mx-auto mb-4 text-orange-400" size={48} />
-              <p className="text-xl text-gray-700 font-semibold">Not enrolled in any programs yet</p>
+              <p className="text-xl text-gray-700 font-semibold">No active program enrollments</p>
               <p className="text-lg text-gray-600 mt-2">Click "Add to Program" below to enroll this participant</p>
             </div>
           ) : (
             <div className="space-y-4">
-              {enrolledPrograms.map((program) => {
+              {activePrograms.map((program) => {
                 const isExpanded = expandedPrograms.has(program.id || '');
                 return (
                   <div
@@ -901,9 +1040,9 @@ export default function ParticipantProfile() {
                               setShowUnenrollConfirm(true);
                             }}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/15"
-                            aria-label={`Unenroll from ${program.name}`}
+                            aria-label={`Withdraw from ${program.name}`}
                           >
-                            <UserX size={13} /> Unenroll
+                            <UserX size={13} /> Withdraw
                           </button>
                           <button
                             className="p-2 hover:bg-orange-200 rounded-lg transition-colors"
@@ -1032,6 +1171,58 @@ export default function ParticipantProfile() {
           )}
         </div>
 
+        {/* Past / Inactive Programs */}
+        {pastPrograms.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-xl p-8 mb-8 border-4 border-zinc-800">
+            <h3 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-3">
+              <Clock className="text-zinc-400" size={32} />
+              Past Programs
+            </h3>
+            <div className="space-y-3">
+              {pastPrograms.map((program) => (
+                <div
+                  key={program.id}
+                  className="flex flex-col gap-3 rounded-xl border-2 border-zinc-200 bg-zinc-50 p-5 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h4 className="text-lg font-bold text-gray-900">{program.name}</h4>
+                      <span className="rounded-full bg-zinc-200 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-zinc-600">
+                        Inactive
+                      </span>
+                    </div>
+                    <div className="mt-1 text-sm text-gray-600">
+                      <span>{program.attendance_count || 0} sessions attended</span>
+                      {program.end_date && (
+                        <span>
+                          {' · '}Ended{' '}
+                          {new Date(program.end_date).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })}
+                        </span>
+                      )}
+                      {program.withdrawal_reason && <span>{' · '}{program.withdrawal_reason}</span>}
+                    </div>
+                  </div>
+                  {profileActive && (
+                    <button
+                      onClick={() => {
+                        setProgramToReenroll(program);
+                        setShowReenrollConfirm(true);
+                      }}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/20"
+                    >
+                      <RotateCcw size={14} /> Re-enroll
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4">
           <button
@@ -1061,7 +1252,7 @@ export default function ParticipantProfile() {
             </>
           )}
 
-          {enrolledPrograms.length > 0 ? (
+          {profileActive ? (
             <>
               <button
                 onClick={() => navigate('/add-to-program')}
@@ -1069,16 +1260,18 @@ export default function ParticipantProfile() {
               >
                 <Plus size={14} /> Add to program
               </button>
-              <button
-                onClick={() => setShowUnenrollAllConfirm(true)}
-                className="flex items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:text-white"
-              >
-                <UserX size={14} /> Make inactive
-              </button>
+              {activePrograms.length > 0 && (
+                <button
+                  onClick={() => setShowUnenrollAllConfirm(true)}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:text-white"
+                >
+                  <UserX size={14} /> Deactivate profile
+                </button>
+              )}
             </>
           ) : (
             <button
-              onClick={handleReactivateProfile}
+              onClick={() => setShowReactivateConfirm(true)}
               className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-emerald-500 to-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:from-emerald-400 hover:to-green-500"
             >
               <RotateCcw size={14} /> Reactivate profile
@@ -1102,11 +1295,20 @@ export default function ParticipantProfile() {
               <p className="mt-2 text-xs text-zinc-500">
                 Their attendance history is kept. They can be re-enrolled later.
               </p>
+              <label className="mt-4 block text-xs text-zinc-400">Withdrawal date</label>
+              <input
+                type="date"
+                value={withdrawalDate}
+                max={today()}
+                onChange={(e) => setWithdrawalDate(e.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
               <div className="mt-5 flex gap-2">
                 <button
                   onClick={() => {
                     setShowUnenrollConfirm(false);
                     setProgramToUnenroll(null);
+                    setWithdrawalDate(today());
                   }}
                   disabled={unenrolling}
                   className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-700 hover:text-white disabled:opacity-50"
@@ -1139,11 +1341,22 @@ export default function ParticipantProfile() {
                 Unenroll <span className="font-semibold text-zinc-200">{participant?.first_name} {participant?.last_name}</span> from all programs?
               </p>
               <p className="mt-2 text-xs text-zinc-500">
-                The participant record and attendance history are preserved. The profile becomes inactive and can be reactivated later by re-enrolling in a program.
+                The participant record and attendance history are preserved. All {activePrograms.length} active program{activePrograms.length === 1 ? '' : 's'} will be ended and the profile becomes inactive. It can be reactivated later.
               </p>
+              <label className="mt-4 block text-xs text-zinc-400">Effective date</label>
+              <input
+                type="date"
+                value={deactivationDate}
+                max={today()}
+                onChange={(e) => setDeactivationDate(e.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
               <div className="mt-5 flex gap-2">
                 <button
-                  onClick={() => setShowUnenrollAllConfirm(false)}
+                  onClick={() => {
+                    setShowUnenrollAllConfirm(false);
+                    setDeactivationDate(today());
+                  }}
                   disabled={unenrolling}
                   className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-700 hover:text-white disabled:opacity-50"
                 >
@@ -1154,7 +1367,101 @@ export default function ParticipantProfile() {
                   disabled={unenrolling}
                   className="flex-1 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-amber-500/20 hover:from-amber-400 hover:to-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {unenrolling ? 'Working…' : 'Make inactive'}
+                  {unenrolling ? 'Working…' : 'Deactivate'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reactivate Profile Modal */}
+        {showReactivateConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-[#111113] p-6 shadow-2xl">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/30">
+                  <RotateCcw size={18} className="text-emerald-300" />
+                </div>
+                <h3 className="text-base font-semibold text-zinc-100">Reactivate profile</h3>
+              </div>
+              <p className="text-sm text-zinc-400">
+                Reactivate <span className="font-semibold text-zinc-200">{participant?.first_name} {participant?.last_name}</span>?
+              </p>
+              {pastPrograms.filter((p) => p.withdrawal_reason === 'Profile deactivated').length > 0 && (
+                <p className="mt-2 text-xs text-zinc-500">
+                  {pastPrograms.filter((p) => p.withdrawal_reason === 'Profile deactivated').length} program(s) ended by the deactivation will be re-enrolled. Programs withdrawn individually stay inactive.
+                </p>
+              )}
+              <label className="mt-4 block text-xs text-zinc-400">Reactivation date</label>
+              <input
+                type="date"
+                value={reactivationDate}
+                max={today()}
+                onChange={(e) => setReactivationDate(e.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => {
+                    setShowReactivateConfirm(false);
+                    setReactivationDate(today());
+                  }}
+                  disabled={unenrolling}
+                  className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-700 hover:text-white disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReactivateProfile}
+                  disabled={unenrolling}
+                  className="flex-1 rounded-lg bg-gradient-to-r from-emerald-500 to-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 hover:from-emerald-400 hover:to-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {unenrolling ? 'Working…' : 'Reactivate'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Re-enroll Single Program Modal */}
+        {showReenrollConfirm && programToReenroll && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-[#111113] p-6 shadow-2xl">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/30">
+                  <RotateCcw size={18} className="text-emerald-300" />
+                </div>
+                <h3 className="text-base font-semibold text-zinc-100">Re-enroll in program</h3>
+              </div>
+              <p className="text-sm text-zinc-400">
+                Re-enroll <span className="font-semibold text-zinc-200">{participant?.first_name} {participant?.last_name}</span> in <span className="font-semibold text-zinc-200">{programToReenroll.name}</span>?
+              </p>
+              <label className="mt-4 block text-xs text-zinc-400">Re-enrollment date</label>
+              <input
+                type="date"
+                value={reenrollmentDate}
+                max={today()}
+                onChange={(e) => setReenrollmentDate(e.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-zinc-800 bg-[#0e0e10] px-3 py-2 text-sm text-zinc-100 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => {
+                    setShowReenrollConfirm(false);
+                    setProgramToReenroll(null);
+                    setReenrollmentDate(today());
+                  }}
+                  disabled={unenrolling}
+                  className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-700 hover:text-white disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReenroll}
+                  disabled={unenrolling}
+                  className="flex-1 rounded-lg bg-gradient-to-r from-emerald-500 to-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 hover:from-emerald-400 hover:to-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {unenrolling ? 'Working…' : 'Re-enroll'}
                 </button>
               </div>
             </div>
